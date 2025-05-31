@@ -52,15 +52,16 @@ public class Main {
                     new UploadProgressListener() {
                         @Override
                         public void onProgress(int current, int total, String activeFiles) {
-                            double percent = total > 0 ? (current * 100.0) / total : 0;
+                            double percent = total > 0 ? Math.round(current * 10000.0 / total) / 100.0 : 0;
                             logger.info("进度: {}/{} ({}%) | 正在上传: {}",
                                     current, total, percent,
                                     activeFiles.isEmpty() ? "无" : activeFiles);
                         }
 
                         @Override
-                        public void onComplete() {
-                            logger.info("所有文件上传完成！");
+                        public void onComplete(int completedCount, int skippedCount) {
+                            logger.info("所有文件处理完成！总共: {} 个，上传: {} 个，跳过: {} 个",
+                                    completedCount, completedCount - skippedCount, skippedCount);
                         }
                     }
             );

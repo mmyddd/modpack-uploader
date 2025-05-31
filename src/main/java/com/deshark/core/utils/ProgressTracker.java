@@ -7,6 +7,7 @@ import java.util.stream.Collectors;
 public class ProgressTracker {
     private final int totalFiles;
     private final AtomicInteger completedFiles = new AtomicInteger(0);
+    private final AtomicInteger skippedFiles = new AtomicInteger(0);
     private final ConcurrentMap<String, Long> activeUploads = new ConcurrentHashMap<>();
     private final UploadProgressListener listener;
     private final ScheduledExecutorService scheduler;
@@ -26,8 +27,12 @@ public class ProgressTracker {
         activeUploads.remove(fileName);
         int completed = completedFiles.incrementAndGet();
         if (listener != null && completed == totalFiles) {
-            listener.onComplete();
+            listener.onComplete(completed, skippedFiles.get());
         }
+    }
+
+    public void skipFile() {
+        skippedFiles.incrementAndGet();
     }
 
     public void startReporting() {
@@ -42,7 +47,6 @@ public class ProgressTracker {
             if (activeUploads.size() > 3) {
                 currentFiles += ", ...";
             }
-
             listener.onProgress(completed, totalFiles, currentFiles);
         }, 0, 1, TimeUnit.SECONDS);
     }

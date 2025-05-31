@@ -129,7 +129,7 @@ public class COSFileManager {
                     tracker.startUpload(relativePath);
                 }
                 try {
-                    return uploadFile(file, relativePath);
+                    return uploadFile(file, relativePath, tracker);
                 } finally {
                     if (tracker != null) {
                         tracker.completeUpload(relativePath);
@@ -147,7 +147,7 @@ public class COSFileManager {
         }
     }
 
-    public ModpackFile uploadFile(File file, String relativePath)
+    public ModpackFile uploadFile(File file, String relativePath, ProgressTracker tracker)
             throws IOException, NoSuchAlgorithmException {
 
         String originalHash = HashCalculator.calculateFileHash(file);
@@ -158,6 +158,9 @@ public class COSFileManager {
 
         // is file always exits?
         if (fileExists(cosPath)) {
+            if (tracker != null) {
+                tracker.skipFile();
+            }
             return createModpackFile(file, relativePath, originalHash, shouldCompress);
         }
 
@@ -364,7 +367,9 @@ public class COSFileManager {
         latestVersion.setChangelogPath(changelogUrl);
         String metaUrl = updateMetaJson(projectId, versionsUrl, latestVersion);
 
-        logger.info("发布完成! 文件数量: {} 个，耗时: {}ms", totalFiles, System.currentTimeMillis() - startTime);
+        logger.info("================");
+        logger.info("发布完成! 耗时: {}ms", (System.currentTimeMillis() - startTime) / 1000.0);
+        logger.info("版本: {}", versionName);
         logger.info("meta.json url: {}", metaUrl);
     }
 
