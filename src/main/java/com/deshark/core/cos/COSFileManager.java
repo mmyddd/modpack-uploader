@@ -368,7 +368,7 @@ public class COSFileManager {
         String metaUrl = updateMetaJson(projectId, versionsUrl, latestVersion);
 
         logger.info("================");
-        logger.info("发布完成! 耗时: {}ms", (System.currentTimeMillis() - startTime) / 1000.0);
+        logger.info("发布完成! 耗时: {}s", (System.currentTimeMillis() - startTime) / 1000.0);
         logger.info("版本: {}", versionName);
         logger.info("meta.json url: {}", metaUrl);
     }
