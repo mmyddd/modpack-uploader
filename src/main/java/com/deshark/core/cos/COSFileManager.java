@@ -80,11 +80,10 @@ public class COSFileManager {
     }
 
     public String generateCOSPath(String hash) {
-        // 格式: x/x/xxxxxxxxxx/其余部分
-        return hash.charAt(0) + "/" +
-                hash.charAt(1) + "/" +
-                hash.substring(2, 12) + "/" +
-                hash.substring(12);
+        return hash.substring(0, 1) + "/" +
+                hash.substring(1, 3) + "/" +
+                hash.substring(3, 7) + "/" +
+                hash.substring(8);
     }
 
     private void collectAllFiles(File directory, List<File> fileList) {
@@ -148,7 +147,7 @@ public class COSFileManager {
     }
 
     public ModpackFile uploadFile(File file, String relativePath, ProgressTracker tracker)
-            throws IOException, NoSuchAlgorithmException {
+            throws IOException {
 
         String originalHash = HashUtil.SHA256(file);
         String cosPath = generateCOSPath(originalHash);
