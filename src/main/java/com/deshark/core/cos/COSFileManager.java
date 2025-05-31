@@ -177,7 +177,6 @@ public class COSFileManager {
             // 设置元数据
             ObjectMetadata metadata = new ObjectMetadata();
             metadata.setContentLength(fileToUpload.length());
-            metadata.setContentEncoding("application/json");
             putRequest.setMetadata(metadata);
 
             cosClient.putObject(putRequest);
