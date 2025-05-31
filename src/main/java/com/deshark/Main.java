@@ -34,8 +34,8 @@ public class Main {
 
         // 设置依赖库
         Map<String, String> libraries = new HashMap<>();
-        libraries.put("net.minecraft", "1.20.1");
-        libraries.put("net.minecraftforge", "47.4.0");
+        libraries.put("net.minecraft", "1.7.10");
+        libraries.put("net.minecraftforge", "10.13.4.1614");
 
         try {
             COSFileManager manager = new COSFileManager(
