@@ -4,12 +4,16 @@ package com.deshark;
 import com.deshark.core.ConfigManager;
 import com.deshark.core.cos.COSFileManager;
 import com.deshark.core.utils.UploadProgressListener;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
 public class Main {
+
+    private static final Logger logger = LoggerFactory.getLogger(Main.class);
 
     public static void main(String[] args) {
 
@@ -23,7 +27,6 @@ public class Main {
         String sourceDirStr = configManager.get("sourceDir");
 
         String projectId = configManager.get("projectId");
-        System.out.println("projectId: " + projectId);
         String versionName = configManager.get("versionName");
 
         File sourceDir = new File(sourceDirStr);
@@ -50,13 +53,13 @@ public class Main {
                         @Override
                         public void onProgress(int current, int total, String currentFileName) {
                             double percentage = (double) current / total * 100;
-                            System.out.printf("上传进度: %.1f%% (%d/%d) - 当前文件: %s%n",
+                            logger.info("上传进度: {}% ({}/{}) - 当前文件: {}",
                                     percentage, current, total, currentFileName);
                         }
 
                         @Override
                         public void onComplete() {
-                            System.out.println("所有文件上传完成！");
+                            logger.info("所有文件上传完成！");
                         }
                     }
             );

@@ -12,6 +12,8 @@ import com.qcloud.cos.auth.COSCredentials;
 import com.qcloud.cos.exception.CosServiceException;
 import com.qcloud.cos.model.*;
 import com.qcloud.cos.region.Region;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -25,6 +27,9 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class COSFileManager {
+
+    private static final Logger logger = LoggerFactory.getLogger(COSFileManager.class);
+
     private final String secretId;
     private final String secretKey;
     private final String bucketName;
@@ -334,7 +339,7 @@ public class COSFileManager {
         String versionsPath = "stable/" + projectId + "/versions.json";
         VersionList versions = createVersionsJson(versionsPath, versionName);
         if (versions == null) {
-            System.out.println("版本重复！已停止上传。");
+            logger.warn("版本重复！已停止上传。");
             return;
         }
 
@@ -378,13 +383,13 @@ public class COSFileManager {
         String metaUrl = updateMetaJson(projectId, versionsUrl, latestVersion);
 
 
-        System.out.println("\n=== 发布完成 ===");
-        System.out.println("总耗时: " + uploadTime);
-        System.out.println("项目ID: " + projectId);
-        System.out.println("版本: " + versionName);
-        System.out.println("发布时间: " + currentDate);
-        System.out.println("总文件数: " + files.size());
-        System.out.println("Meta URL: " + metaUrl);
+        logger.info("\n=== 发布完成 ===");
+        logger.info("总耗时: {}", uploadTime);
+        logger.info("项目ID: {}", projectId);
+        logger.info("版本: {}", versionName);
+        logger.info("发布时间: {}", currentDate);
+        logger.info("总文件数: {}", files.size());
+        logger.info("Meta URL: {}", metaUrl);
     }
 
     public void shutdown() {
