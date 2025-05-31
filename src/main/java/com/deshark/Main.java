@@ -24,6 +24,7 @@ public class Main {
         String secretKey = configManager.get("secretKey");
         String region = configManager.get("region");
         String bucketName = configManager.get("bucketName");
+        String baseUrl = configManager.get("baseUrl");
         String sourceDirStr = configManager.get("sourceDir");
 
         String projectId = configManager.get("projectId");
@@ -41,7 +42,8 @@ public class Main {
                     secretId,
                     secretKey,
                     region,
-                    bucketName
+                    bucketName,
+                    baseUrl
             );
 
             manager.publishModpackVersion(

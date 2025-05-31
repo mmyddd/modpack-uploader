@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -31,6 +30,7 @@ public class ConfigManager {
                 config.put("region", "");
                 config.put("bucketName", "");
                 config.put("sourceDir", "");
+                config.put("baseUrl", "");
                 config.put("projectId", "");
                 config.put("versionName", "");
                 saveConfig();

@@ -41,12 +41,12 @@ public class COSFileManager {
     private final int THREAD_POOL_SIZE = 16;
     private ExecutorService uploadExecutor;
 
-    public COSFileManager(String secretId, String secretKey, String region, String bucketName) {
+    public COSFileManager(String secretId, String secretKey, String region, String bucketName, String baseUrl) {
         this.secretId = secretId;
         this.secretKey = secretKey;
         this.region = region;
         this.bucketName = bucketName;
-        baseUrl = "https://" + bucketName + ".cos." + region + ".myqcloud.com";
+        this.baseUrl = baseUrl;
         initCOSClient();
         initThreadPool();
     }
