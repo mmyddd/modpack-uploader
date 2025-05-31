@@ -100,6 +100,19 @@ public class COSFileManager {
         }
     }
 
+    private boolean fileExists(String cosPath) {
+        try {
+            cosClient.getObjectMetadata(bucketName, cosPath);
+            return true;
+        } catch (CosServiceException e) {
+            if (e.getStatusCode() == 404) {
+                return false;
+            } else {
+                throw e;
+            }
+        }
+    }
+
     private void uploadFiles(File baseDir, List<File> filesToUpload, List<ModpackFile> resultFiles,
                              ProgressTracker tracker)
             throws InterruptedException, ExecutionException {
@@ -136,42 +149,44 @@ public class COSFileManager {
 
     public ModpackFile uploadFile(File file, String relativePath)
             throws IOException, NoSuchAlgorithmException {
-        // 计算原文件哈希
+
         String originalHash = HashCalculator.calculateFileHash(file);
-
-        File fileToUpload = file;
-        boolean compressed = false;
-
-        // 决定是否压缩
-        if (FileCompressor.shouldCompressFile(file)) {
-            fileToUpload = FileCompressor.compressFile(file);
-            compressed = true;
-        }
-
-        // 生成COS路径
         String cosPath = generateCOSPath(originalHash);
 
-        // 上传文件
+        // should file be compressed?
+        boolean shouldCompress = FileCompressor.shouldCompressFile(file);
+
+        // is file always exits?
+        if (fileExists(cosPath)) {
+            return createModpackFile(file, relativePath, originalHash, shouldCompress);
+        }
+
+        File fileToUpload = file;
+
+        if (shouldCompress) {
+            fileToUpload = FileCompressor.compressFile(file);
+        }
+
+        // upload
         try {
             PutObjectRequest putRequest = new PutObjectRequest(bucketName, cosPath, fileToUpload);
 
             // 设置元数据
             ObjectMetadata metadata = new ObjectMetadata();
             metadata.setContentLength(fileToUpload.length());
-
+            metadata.setContentEncoding("application/json");
             putRequest.setMetadata(metadata);
 
-            PutObjectResult result = cosClient.putObject(putRequest);
+            cosClient.putObject(putRequest);
 
-            return createModpackFile(file, relativePath, originalHash, compressed);
+            return createModpackFile(file, relativePath, originalHash, shouldCompress);
         } finally {
             // 清理临时压缩文件
-            if (compressed && !fileToUpload.equals(file)) {
+            if (shouldCompress && !fileToUpload.equals(file)) {
                 fileToUpload.delete();
             }
         }
     }
-
 
     private ModpackFile createModpackFile(File originalFile, String relativePath, String originalHash, boolean compressed) {
         ModpackFile entry = new ModpackFile();
