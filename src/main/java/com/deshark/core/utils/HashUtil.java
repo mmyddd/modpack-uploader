@@ -23,7 +23,7 @@ public class HashUtil {
                 logger.error(e.getMessage());
             }
         } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);
+            logger.error(e.getMessage());
         }
 
         return HexFormat.of().formatHex(hashBytes);
