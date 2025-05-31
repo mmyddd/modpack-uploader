@@ -2,7 +2,7 @@ package com.deshark.core.cos;
 
 import com.deshark.core.schemas.*;
 import com.deshark.core.utils.FileCompressor;
-import com.deshark.core.utils.HashCalculator;
+import com.deshark.core.utils.HashUtil;
 import com.deshark.core.utils.ProgressTracker;
 import com.deshark.core.utils.UploadProgressListener;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -150,7 +150,7 @@ public class COSFileManager {
     public ModpackFile uploadFile(File file, String relativePath, ProgressTracker tracker)
             throws IOException, NoSuchAlgorithmException {
 
-        String originalHash = HashCalculator.calculateFileHash(file);
+        String originalHash = HashUtil.SHA256(file);
         String cosPath = generateCOSPath(originalHash);
 
         // should file be compressed?
