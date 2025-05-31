@@ -3,6 +3,7 @@ package com.deshark.core.cos;
 import com.deshark.core.schemas.*;
 import com.deshark.core.utils.FileCompressor;
 import com.deshark.core.utils.HashCalculator;
+import com.deshark.core.utils.ProgressTracker;
 import com.deshark.core.utils.UploadProgressListener;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.qcloud.cos.COSClient;
@@ -38,7 +39,6 @@ public class COSFileManager {
     private COSClient cosClient;
 
     private final int THREAD_POOL_SIZE = 16;
-    private final int PROGRESS_UPDATE_INTERVAL = 1;
     private ExecutorService uploadExecutor;
 
     public COSFileManager(String secretId, String secretKey, String region, String bucketName) {
@@ -87,67 +87,6 @@ public class COSFileManager {
                 hash.substring(12);
     }
 
-    private int countFiles(File directory) {
-        int count = 0;
-        File[] files = directory.listFiles();
-        if (files != null) {
-            for (File file : files) {
-                if (file.isDirectory()) {
-                    count += countFiles(file);
-                } else {
-                    count++;
-                }
-            }
-        }
-        return count;
-    }
-
-    private void uploadDirectory(File currentDir, File baseDir, List<ModpackFile> files,
-                                 UploadProgressListener listener, AtomicInteger counter, int totalFiles)
-            throws InterruptedException, ExecutionException {
-
-        List<File> allFiles = new ArrayList<>();
-        collectAllFiles(currentDir, allFiles);
-
-        // 创建并发任务列表
-        List<Future<ModpackFile>> futures = new ArrayList<>();
-
-        for (File file : allFiles) {
-            String relativePath = getRelativePath(baseDir, file);
-
-            Future<ModpackFile> future = uploadExecutor.submit(() -> {
-                try {
-                    ModpackFile modpackFile = uploadFile(file, relativePath);
-
-                    // 更新进度（减少频繁的控制台输出）
-                    int current = counter.incrementAndGet();
-                    if (listener != null && (current % PROGRESS_UPDATE_INTERVAL == 0 || current == totalFiles)) {
-                        listener.onProgress(current, totalFiles, relativePath);
-                    }
-
-                    return modpackFile;
-                } catch (Exception e) {
-                    throw new RuntimeException("上传文件失败: " + relativePath, e);
-                }
-            });
-
-            futures.add(future);
-        }
-
-        // 等待所有任务完成并收集结果
-        for (Future<ModpackFile> future : futures) {
-            try {
-                ModpackFile result = future.get();
-                synchronized (files) {
-                    files.add(result);
-                }
-            } catch (ExecutionException e) {
-                throw e;
-            }
-        }
-
-    }
-
     private void collectAllFiles(File directory, List<File> fileList) {
         File[] files = directory.listFiles();
         if (files != null) {
@@ -158,6 +97,40 @@ public class COSFileManager {
                     fileList.add(file);
                 }
             }
+        }
+    }
+
+    private void uploadFiles(File baseDir, List<File> filesToUpload, List<ModpackFile> resultFiles,
+                             ProgressTracker tracker)
+            throws InterruptedException, ExecutionException {
+
+        if (tracker != null) {
+            tracker.startReporting();
+        }
+        List<Future<ModpackFile>> futures = new ArrayList<>();
+        for (File file : filesToUpload) {
+            String relativePath = getRelativePath(baseDir, file);
+
+            Future<ModpackFile> future = uploadExecutor.submit(() -> {
+                if (tracker != null) {
+                    tracker.startUpload(relativePath);
+                }
+                try {
+                    return uploadFile(file, relativePath);
+                } finally {
+                    if (tracker != null) {
+                        tracker.completeUpload(relativePath);
+                    }
+                }
+            });
+            futures.add(future);
+        }
+        for (Future<ModpackFile> future : futures) {
+            resultFiles.add(future.get());
+        }
+
+        if (tracker != null) {
+            tracker.stopReporting();
         }
     }
 
@@ -327,69 +300,57 @@ public class COSFileManager {
 
     public void publishModpackVersion(File sourceDir, String projectId, String versionName,
                                       Map<String, String> libraries, UploadProgressListener listener)
-            throws IOException, NoSuchAlgorithmException, ExecutionException, InterruptedException {
+            throws IOException, ExecutionException, InterruptedException {
 
-        // 1. 先统计文件总数
-        int totalFiles = countFiles(sourceDir);
+        // check version
+        String versionsPath = "stable/" + projectId + "/versions.json";
+        VersionList versions = createVersionsJson(versionsPath, versionName);
+        if (versions == null) {
+            logger.warn("版本名“{}”重复，已停止上传", versionName);
+            return;
+        }
+
+        String currentDate = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+
+        List<File> allFiles = new ArrayList<>();
+        collectAllFiles(sourceDir, allFiles);
+        int totalFiles = allFiles.size();
+
         if (listener != null) {
             listener.onProgress(0, totalFiles, "准备上传...");
         }
 
-        // 2. 获取versions.json
-        String versionsPath = "stable/" + projectId + "/versions.json";
-        VersionList versions = createVersionsJson(versionsPath, versionName);
-        if (versions == null) {
-            logger.warn("版本重复！已停止上传。");
-            return;
-        }
+        // init tracker
+        ProgressTracker tracker = listener != null ? new ProgressTracker(totalFiles, listener) : null;
 
-        // 3. 生成当前时间戳
-        String currentDate = java.time.LocalDateTime.now()
-                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-
-        // 4. 上传文件
-        String modpackPath = "stable/" + projectId + "/versions/" + versionName + "/modpack.json";
+        // upload modpack files
         List<ModpackFile> files = new ArrayList<>();
-
-        AtomicInteger counter = new AtomicInteger(0);
         long startTime = System.currentTimeMillis();
+        uploadFiles(sourceDir, allFiles, files, tracker);
 
-        uploadDirectory(sourceDir, sourceDir, files, listener, counter, totalFiles);
+        // update metadata
+        String modpackPath = "stable/" + projectId + "/versions/" + versionName + "/modpack.json";
 
-        long uploadTime = System.currentTimeMillis() - startTime;
-
-        // 5. 创建并上传modpack.json
         Modpack modpack = new Modpack();
         modpack.setVersion(versionName);
         modpack.setLibraries(libraries);
         modpack.setFiles(files);
-
         String modpackUrl = uploadJsonConfig(modpack, modpackPath);
 
-        // 6. 上传changelog
         String changelogUrl = "stable/" + projectId + "/versions/" + versionName +"/changelog.json";
 
-        // 7. 更新versions.json
         String versionsUrl = updateVersionsJson(versions, versionsPath, versionName, modpackUrl, changelogUrl, currentDate);
 
-        // 8. 创建最新版本信息
         VersionInfo latestVersion = new VersionInfo();
         latestVersion.setVersionName(versionName);
         latestVersion.setVersionDate(currentDate);
         latestVersion.setPackFilePath(modpackUrl);
         latestVersion.setChangelogPath(changelogUrl);
-
-        // 9. 更新meta.json
         String metaUrl = updateMetaJson(projectId, versionsUrl, latestVersion);
 
-
-        logger.info("\n=== 发布完成 ===");
-        logger.info("总耗时: {}", uploadTime);
-        logger.info("项目ID: {}", projectId);
-        logger.info("版本: {}", versionName);
-        logger.info("发布时间: {}", currentDate);
-        logger.info("总文件数: {}", files.size());
-        logger.info("Meta URL: {}", metaUrl);
+        logger.info("发布完成! 文件数量: {} 个，耗时: {}ms", totalFiles, System.currentTimeMillis() - startTime);
+        logger.info("meta.json url: {}", metaUrl);
     }
 
     public void shutdown() {

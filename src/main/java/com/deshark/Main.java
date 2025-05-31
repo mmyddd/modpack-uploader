@@ -51,10 +51,11 @@ public class Main {
                     libraries,
                     new UploadProgressListener() {
                         @Override
-                        public void onProgress(int current, int total, String currentFileName) {
-                            double percentage = (double) current / total * 100;
-                            logger.info("上传进度: {}% ({}/{}) - 当前文件: {}",
-                                    percentage, current, total, currentFileName);
+                        public void onProgress(int current, int total, String activeFiles) {
+                            double percent = total > 0 ? (current * 100.0) / total : 0;
+                            logger.info("进度: {}/{} ({}%) | 正在上传: {}",
+                                    current, total, percent,
+                                    activeFiles.isEmpty() ? "无" : activeFiles);
                         }
 
                         @Override
