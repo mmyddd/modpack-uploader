@@ -21,14 +21,20 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class COSFileManager {
     private final String secretId;
     private final String secretKey;
     private final String bucketName;
     private final String region;
-    private String baseUrl;
+    private final String baseUrl;
     private COSClient cosClient;
+
+    private final int THREAD_POOL_SIZE = 16;
+    private final int PROGRESS_UPDATE_INTERVAL = 1;
+    private ExecutorService uploadExecutor;
 
     public COSFileManager(String secretId, String secretKey, String region, String bucketName) {
         this.secretId = secretId;
@@ -37,12 +43,35 @@ public class COSFileManager {
         this.bucketName = bucketName;
         baseUrl = "https://" + bucketName + ".cos." + region + ".myqcloud.com";
         initCOSClient();
+        initThreadPool();
     }
 
     private void initCOSClient() {
         COSCredentials cred = new BasicCOSCredentials(secretId, secretKey);
         ClientConfig clientConfig = new ClientConfig(new Region(region));
+        clientConfig.setMaxConnectionsCount(50);
+        clientConfig.setConnectionTimeout(5000);
+        clientConfig.setSocketTimeout(10000);
         this.cosClient = new COSClient(cred, clientConfig);
+    }
+
+    private void initThreadPool() {
+        this.uploadExecutor = new ThreadPoolExecutor(
+                THREAD_POOL_SIZE,
+                THREAD_POOL_SIZE,
+                60L,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(),
+                new ThreadFactory() {
+                    private final AtomicInteger counter = new AtomicInteger(1);
+                    @Override
+                    public Thread newThread(Runnable r) {
+                        Thread t = new Thread(r, "COSUpload-" + counter.getAndIncrement());
+                        t.setDaemon(true);
+                        return t;
+                    }
+                }
+        );
     }
 
     public String generateCOSPath(String hash) {
@@ -53,9 +82,6 @@ public class COSFileManager {
                 hash.substring(12);
     }
 
-    /**
-     * 递归统计目录中的文件数量
-     */
     private int countFiles(File directory) {
         int count = 0;
         File[] files = directory.listFiles();
@@ -71,28 +97,60 @@ public class COSFileManager {
         return count;
     }
 
-    /**
-     * 递归上传目录
-     */
     private void uploadDirectory(File currentDir, File baseDir, List<ModpackFile> files,
-                                 UploadProgressListener listener, int[] counter, int totalFiles)
-            throws IOException, NoSuchAlgorithmException {
+                                 UploadProgressListener listener, AtomicInteger counter, int totalFiles)
+            throws InterruptedException, ExecutionException {
 
-        File[] fileList = currentDir.listFiles();
-        if (fileList == null) return;
+        List<File> allFiles = new ArrayList<>();
+        collectAllFiles(currentDir, allFiles);
 
-        for (File file : fileList) {
-            if (file.isDirectory()) {
-                uploadDirectory(file, baseDir, files, listener, counter, totalFiles);
-            } else {
-                String relativePath = getRelativePath(baseDir, file);
-                ModpackFile modpackFile = uploadFile(file, relativePath);
-                files.add(modpackFile);
+        // 创建并发任务列表
+        List<Future<ModpackFile>> futures = new ArrayList<>();
 
-                // 更新进度
-                counter[0]++;
-                if (listener != null) {
-                    listener.onProgress(counter[0], totalFiles, relativePath);
+        for (File file : allFiles) {
+            String relativePath = getRelativePath(baseDir, file);
+
+            Future<ModpackFile> future = uploadExecutor.submit(() -> {
+                try {
+                    ModpackFile modpackFile = uploadFile(file, relativePath);
+
+                    // 更新进度（减少频繁的控制台输出）
+                    int current = counter.incrementAndGet();
+                    if (listener != null && (current % PROGRESS_UPDATE_INTERVAL == 0 || current == totalFiles)) {
+                        listener.onProgress(current, totalFiles, relativePath);
+                    }
+
+                    return modpackFile;
+                } catch (Exception e) {
+                    throw new RuntimeException("上传文件失败: " + relativePath, e);
+                }
+            });
+
+            futures.add(future);
+        }
+
+        // 等待所有任务完成并收集结果
+        for (Future<ModpackFile> future : futures) {
+            try {
+                ModpackFile result = future.get();
+                synchronized (files) {
+                    files.add(result);
+                }
+            } catch (ExecutionException e) {
+                throw e;
+            }
+        }
+
+    }
+
+    private void collectAllFiles(File directory, List<File> fileList) {
+        File[] files = directory.listFiles();
+        if (files != null) {
+            for (File file : files) {
+                if (file.isDirectory()) {
+                    collectAllFiles(file, fileList);
+                } else {
+                    fileList.add(file);
                 }
             }
         }
@@ -147,19 +205,13 @@ public class COSFileManager {
         return entry;
     }
 
-    /**
-     * 获取相对路径
-     */
     private String getRelativePath(File baseDir, File file) {
         String basePath = baseDir.getAbsolutePath();
         String filePath = file.getAbsolutePath();
         String relativePath = filePath.substring(basePath.length() + 1);
-        return relativePath.replace("\\", "/"); // 统一使用正斜杠
+        return relativePath.replace("\\", "/");
     }
 
-    /**
-     * 上传JSON配置文件到COS
-     */
     public String uploadJsonConfig(Object config, String cosPath) throws IOException {
         // 创建临时文件
         File tempFile = File.createTempFile("config", ".json");
@@ -187,9 +239,6 @@ public class COSFileManager {
         }
     }
 
-    /**
-     * 创建versions.json
-     */
     public VersionList createVersionsJson(String versionsPath, String versionName)
             throws IOException {
 
@@ -259,9 +308,6 @@ public class COSFileManager {
         return uploadJsonConfig(versions, versionsPath);
     }
 
-    /**
-     * 更新或创建meta.json
-     */
     public String updateMetaJson(String projectId, String versionsUrl,
                                  VersionInfo latestVersion) throws IOException {
 
@@ -274,12 +320,9 @@ public class COSFileManager {
         return uploadJsonConfig(meta, metaPath);
     }
 
-    /**
-     * 完整的发布流程：创建modpack并更新版本信息
-     */
     public void publishModpackVersion(File sourceDir, String projectId, String versionName,
                                       Map<String, String> libraries, UploadProgressListener listener)
-        throws IOException, NoSuchAlgorithmException {
+            throws IOException, NoSuchAlgorithmException, ExecutionException, InterruptedException {
 
         // 1. 先统计文件总数
         int totalFiles = countFiles(sourceDir);
@@ -299,13 +342,18 @@ public class COSFileManager {
         String currentDate = java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
 
-        // 4. 创建并上传modpack.json
+        // 4. 上传文件
         String modpackPath = "stable/" + projectId + "/versions/" + versionName + "/modpack.json";
         List<ModpackFile> files = new ArrayList<>();
 
-        int[] counter = new int[]{0};
+        AtomicInteger counter = new AtomicInteger(0);
+        long startTime = System.currentTimeMillis();
+
         uploadDirectory(sourceDir, sourceDir, files, listener, counter, totalFiles);
 
+        long uploadTime = System.currentTimeMillis() - startTime;
+
+        // 5. 创建并上传modpack.json
         Modpack modpack = new Modpack();
         modpack.setVersion(versionName);
         modpack.setLibraries(libraries);
@@ -313,24 +361,25 @@ public class COSFileManager {
 
         String modpackUrl = uploadJsonConfig(modpack, modpackPath);
 
-        // 5. 上传changelog
+        // 6. 上传changelog
         String changelogUrl = "stable/" + projectId + "/versions/" + versionName +"/changelog.json";
 
-        // 6. 更新versions.json
+        // 7. 更新versions.json
         String versionsUrl = updateVersionsJson(versions, versionsPath, versionName, modpackUrl, changelogUrl, currentDate);
 
-        // 7. 创建最新版本信息
+        // 8. 创建最新版本信息
         VersionInfo latestVersion = new VersionInfo();
         latestVersion.setVersionName(versionName);
         latestVersion.setVersionDate(currentDate);
         latestVersion.setPackFilePath(modpackUrl);
         latestVersion.setChangelogPath(changelogUrl);
 
-        // 8. 更新meta.json
+        // 9. 更新meta.json
         String metaUrl = updateMetaJson(projectId, versionsUrl, latestVersion);
 
 
         System.out.println("\n=== 发布完成 ===");
+        System.out.println("总耗时: " + uploadTime);
         System.out.println("项目ID: " + projectId);
         System.out.println("版本: " + versionName);
         System.out.println("发布时间: " + currentDate);
@@ -338,15 +387,20 @@ public class COSFileManager {
         System.out.println("Meta URL: " + metaUrl);
     }
 
-    /**
-     * 关闭COS客户端
-     */
     public void shutdown() {
+        if (uploadExecutor != null) {
+            uploadExecutor.shutdown();
+            try {
+                if (!uploadExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
+                    uploadExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                uploadExecutor.shutdownNow();
+            }
+        }
+
         if (cosClient != null) {
             cosClient.shutdown();
         }
-    }
-
-    public void createMetadata() {
     }
 }
