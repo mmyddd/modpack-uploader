@@ -13,4 +13,6 @@
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
     </root>
+    <logger name="com.deshark" level="DEBUG"/>
+    <logger name="com.deshark.core.task" level="DEBUG"/>
 </configuration>

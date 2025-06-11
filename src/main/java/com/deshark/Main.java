@@ -20,16 +20,32 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 
 public class Main {
 
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
-
     private static final ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
-
     private static CloudStorageProvider storageProvider;
+
+    private static final int maxConcurrency = 12;
+    private static final ExecutorService threadPool = Executors.newFixedThreadPool(maxConcurrency,
+            new ThreadFactory() {
+                private AtomicInteger counter = new AtomicInteger(0);
+                @Override
+                public Thread newThread(Runnable r) {
+                    Thread t = new Thread(r, "FileUpload-" + counter.incrementAndGet());
+                    t.setDaemon(false);
+                    return t;
+                }
+            });
+    private static final CopyOnWriteArrayList<ModpackFile> successFiles = new CopyOnWriteArrayList<>();
+    private static final CopyOnWriteArrayList<ModpackFile> failedFiles = new CopyOnWriteArrayList<>();
+    private static AtomicInteger completedTasks = new AtomicInteger(0);
+    private static AtomicInteger successTasks = new AtomicInteger(0);
 
     public static void main(String[] args) {
 
@@ -90,48 +106,45 @@ public class Main {
             e.printStackTrace();
         }
 
-        List<ModpackFile> completedFiles = new ArrayList<>();
-        Object lock = new Object();
-
         List<File> fileList = new ArrayList<>();
         FileUtil.collectFiles(sourceDir, fileList);
         logger.info("Found {} files", fileList.size());
 
         long startTime = System.currentTimeMillis();
 
-        List<Thread> threads = new ArrayList<>();
+        List<Future<ModpackFile>> futures = new ArrayList<>();
+
         for (File file : fileList) {
-            Thread thread = new Thread(() -> {
-                try {
-                    FileUploadTask task = new FileUploadTask(storageProvider, file, getRelativePath(file, sourceDir), downloadUrl);
-                    task.execute();
-                    ModpackFile result = task.getResult();
-                    synchronized (lock) {
-                        completedFiles.add(result);
-                    }
-                } catch (Exception e) {
-                    logger.error("File {} upload failed。", file.getPath());
-                    logger.error(e.getMessage());
-                }
-            });
-            threads.add(thread);
-            thread.start();
+            FileUploadTask task = new FileUploadTask(storageProvider, file, getRelativePath(file, sourceDir), downloadUrl);
+            Future<ModpackFile> future = threadPool.submit(task);
+            futures.add(future);
         }
 
-        for (Thread thread : threads) {
+        for (Future<ModpackFile> future : futures) {
             try {
-                thread.join();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
+                ModpackFile file = future.get();
+                successFiles.add(file);
+                successTasks.incrementAndGet();
+            } catch (ExecutionException | InterruptedException e) {
+                logger.error(e.getMessage());
             }
+            completedTasks.incrementAndGet();
+        }
+
+        threadPool.shutdown();
+        try {
+            if (!threadPool.awaitTermination(60, TimeUnit.SECONDS)) {
+                threadPool.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            threadPool.shutdownNow();
         }
 
         long endTime = System.currentTimeMillis();
         logger.info("Files upload completed in {} ms", endTime - startTime);
 
         // meta files
-        Modpack modpack = new Modpack(completedFiles, versionName, libraries);
+        Modpack modpack = new Modpack(successFiles, versionName, libraries);
 
         uploadConfigFile(modpack, modpackKey);
 
