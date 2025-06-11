@@ -1,58 +1,70 @@
 package com.deshark.core;
 
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.deshark.core.schemas.Config;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 public class ConfigManager {
-    private Map<String, String> config;
-    private final File configFile = new File("mpu-config.json");
-    private final ObjectMapper objectMapper;
+
+    private final static Logger logger = LoggerFactory.getLogger(ConfigManager.class);
+
+    private Config config;
+    private final File configFile = new File("mup-config.json");
+    private final ObjectMapper objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
     public ConfigManager() {
-        this.objectMapper = new ObjectMapper();
-        this.config = new LinkedHashMap<>();
         loadConfig();
     }
 
     private void loadConfig() {
         try {
-
             if (configFile.exists()) {
-                config = objectMapper.readValue(configFile, new TypeReference<>() {});
+                config = objectMapper.readValue(configFile, Config.class);
             } else {
-                config.put("secretId", "");
-                config.put("secretKey", "");
-                config.put("region", "");
-                config.put("bucketName", "");
-                config.put("sourceDir", "");
-                config.put("baseUrl", "");
-                config.put("projectId", "");
-                config.put("versionName", "");
+                config = Config.empty();
                 saveConfig();
+                logger.info("mpu-config.json created, Please fill in the configuration");
             }
         } catch (IOException e) {
-            System.out.println("Failed to load config: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
     public void saveConfig() {
         try {
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(configFile, config);
+            objectMapper.writeValue(configFile, config);
         } catch (IOException e) {
-            System.err.println("保存配置文件失败: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
-    public String get(String key) {
-        return config.getOrDefault(key, "");
+    public String getSecretId() {
+        return config.storage().secretId();
     }
-
-    public void set(String key, String value) {
-        config.put(key, value);
+    public String getSecretKey() {
+        return config.storage().secretKey();
+    }
+    public String getRegion() {
+        return config.storage().region();
+    }
+    public String getBucketName() {
+        return config.storage().bucketName();
+    }
+    public String getDownloadUrl() {
+        return config.storage().downloadUrl();
+    }
+    public String getProjectId() {
+        return config.storage().projectId();
+    }
+    public String getSourceDir() {
+        return config.sourceDir();
+    }
+    public String getVersionName() {
+        return config.versionName();
     }
 }
