@@ -16,6 +16,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
@@ -48,10 +49,23 @@ public class Main {
         String bucketName = configManager.getBucketName();
         String downloadUrl = configManager.getDownloadUrl();
         String sourceDirStr = configManager.getSourceDir();
+        String sourceServerStr = configManager.getSourceServerDir();
+        String sourceClientStr = configManager.getSourceClientDir();
         String projectId = configManager.getProjectId();
         String versionName = configManager.getVersionName();
 
-        Path sourceDir = Paths.get(sourceDirStr);
+        Path sourceDir;
+        Path sourceServerDir;
+        Path sourceClientDir;
+
+        try {
+            sourceDir = createDirectoryIfNotExists(sourceDirStr);
+            sourceServerDir = createDirectoryIfNotExists(sourceServerStr);
+            sourceClientDir = createDirectoryIfNotExists(sourceClientStr);
+        } catch (IOException e) {
+            logger.error("Source directory error", e);
+            return;
+        }
 
         // set libraries(whats the use)
         Map<String, String> libraries = new HashMap<>();
@@ -71,28 +85,50 @@ public class Main {
         try {
             checkExistingVersions(metaKey, versionsKey, versionName);
         } catch (IOException e) {
-            logger.error("Version check failed", e);
+            logger.error("Version check failed");
             return;
         }
 
         List<Path> fileList;
+        List<Path> serverFileList;
+        List<Path> clientFileList;
         try {
             fileList = FileUtil.collectFiles(sourceDir);
+            serverFileList = FileUtil.collectFiles(sourceServerDir);
+            clientFileList = FileUtil.collectFiles(sourceClientDir);
         } catch (IOException e) {
             logger.error("Failed to collect files", e);
             return;
         }
-        logger.info("Found {} files", fileList.size());
+        logger.info("Found {} common files", fileList.size());
+        logger.info("Found {} server files", serverFileList.size());
+        logger.info("Found {} client files", clientFileList.size());
+        logger.info("Total files: {}", fileList.size() + serverFileList.size() + clientFileList.size());
 
         long startTime = System.currentTimeMillis();
-        List<ModpackFile> results;
+        List<ModpackFile> results = new ArrayList<>();
+
         try (ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() * 2)) {
-            List<CompletableFuture<ModpackFile>> futures = fileList.stream()
-                    .map(file -> new ModpackFileUploadTask(storageProvider, file, getRelativePath(file, sourceDir), downloadUrl, 3)
+            List<CompletableFuture<ModpackFile>> commonFutures = fileList.stream()
+                    .map(file -> new ModpackFileUploadTask(storageProvider, file, getRelativePath(file, sourceDir), downloadUrl, "common", 3)
                             .executeAsync(executor))
                     .toList();
-            results = new ArrayList<>();
-            for (CompletableFuture<ModpackFile> future : futures) {
+            List<CompletableFuture<ModpackFile>> serverFutures = serverFileList.stream()
+                    .map(file -> new ModpackFileUploadTask(storageProvider, file, getRelativePath(file, sourceServerDir), downloadUrl, "server", 3)
+                            .executeAsync(executor))
+                    .toList();
+
+            List<CompletableFuture<ModpackFile>> clientFutures = clientFileList.stream()
+                    .map(file -> new ModpackFileUploadTask(storageProvider, file, getRelativePath(file, sourceClientDir), downloadUrl, "client", 3)
+                            .executeAsync(executor))
+                    .toList();
+
+            List<CompletableFuture<ModpackFile>> allFutures = new ArrayList<>();
+            allFutures.addAll(commonFutures);
+            allFutures.addAll(serverFutures);
+            allFutures.addAll(clientFutures);
+
+            for (CompletableFuture<ModpackFile> future : allFutures) {
                 try {
                     results.add(future.get());
                 } catch (ExecutionException | InterruptedException e) {
@@ -137,6 +173,17 @@ public class Main {
         logger.info("meta.json: {}", metaUrl);
 
         storageProvider.shutdown();
+    }
+
+    private static Path createDirectoryIfNotExists(String pathStr) throws IOException {
+        if (pathStr == null || pathStr.isEmpty()) {
+            throw new IllegalArgumentException("Path cannot be null or empty");
+        }
+        Path path = Paths.get(pathStr);
+        if (!Files.exists(path)) {
+            Files.createDirectories(path);
+        }
+        return path;
     }
 
     private static void checkExistingVersions(String metaKey, String versionsKey, String versionName) throws IOException {

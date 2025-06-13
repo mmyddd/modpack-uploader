@@ -20,14 +20,16 @@ public class ModpackFileUploadTask {
     private final Path file;
     private final String relativePath;
     private final String downloadUrl;
+    private final String dist;
     private final int maxRetries;
     private final AtomicInteger currentRetry = new AtomicInteger(0);
 
-    public ModpackFileUploadTask(CloudStorageProvider storage, Path file, String relativePath, String downloadUrl, int maxRetries) {
+    public ModpackFileUploadTask(CloudStorageProvider storage, Path file, String relativePath, String downloadUrl, String dist, int maxRetries) {
         this.storage = storage;
         this.file = file;
         this.relativePath = relativePath;
         this.downloadUrl = downloadUrl;
+        this.dist = dist;
         this.maxRetries = maxRetries;
     }
 
@@ -71,7 +73,7 @@ public class ModpackFileUploadTask {
                 storage.upload(fileToUpload, key, shouldCompress);
                 log.info("Upload completed: {}", relativePath);
             }
-            return new ModpackFile(relativePath, hash, link, Files.size(file), null, shouldCompress);
+            return new ModpackFile(relativePath, hash, link, Files.size(file), dist, shouldCompress);
         } catch (IOException e) {
             throw new RuntimeException(e);
         } finally {

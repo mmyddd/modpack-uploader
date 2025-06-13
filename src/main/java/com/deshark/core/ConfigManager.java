@@ -64,6 +64,12 @@ public class ConfigManager {
     public String getSourceDir() {
         return config.sourceDir();
     }
+    public String getSourceServerDir() {
+        return config.sourceServerDir();
+    }
+    public String getSourceClientDir() {
+        return config.sourceClientDir();
+    }
     public String getVersionName() {
         return config.versionName();
     }
