@@ -12,20 +12,25 @@ import com.qcloud.cos.model.ObjectMetadata;
 import com.qcloud.cos.model.PutObjectRequest;
 import com.qcloud.cos.region.Region;
 
-import java.io.File;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.zip.InflaterInputStream;
 
 public class TencentCOSProvider implements CloudStorageProvider {
-
+    private static final String DEFLATE_ENCODING = "deflate";
     private final String bucketName;
     private final COSClient cosClient;
 
     public TencentCOSProvider(String secretId, String secretKey, String region,
                               String bucketName) {
-        this.bucketName = bucketName;
+        Objects.requireNonNull(secretId, "Secret ID cannot be null");
+        Objects.requireNonNull(secretKey, "Secret Key cannot be null");
+        Objects.requireNonNull(region, "Region cannot be null");
+        this.bucketName = Objects.requireNonNull(bucketName, "Bucket name cannot be null");
 
         COSCredentials cred = new BasicCOSCredentials(secretId, secretKey);
         ClientConfig clientConfig = new ClientConfig(new Region(region));
@@ -36,12 +41,14 @@ public class TencentCOSProvider implements CloudStorageProvider {
     }
 
     @Override
-    public void upload(File file, String path, boolean compressed) throws IOException {
-        PutObjectRequest putRequest = new PutObjectRequest(bucketName, path, file);
+    public void upload(Path file, String key, boolean compressed) throws IOException {
+        Objects.requireNonNull(file, "File cannot be null");
+        Objects.requireNonNull(key, "Key cannot be null");
+        PutObjectRequest putRequest = new PutObjectRequest(bucketName, key, file.toFile());
         ObjectMetadata metadata = new ObjectMetadata();
-        metadata.setContentLength(file.length());
+        metadata.setContentLength(Files.size(file));
         if (compressed) {
-            metadata.setContentEncoding("deflate");
+            metadata.setContentEncoding(DEFLATE_ENCODING);
         }
         putRequest.setMetadata(metadata);
         upload(putRequest);
@@ -52,16 +59,17 @@ public class TencentCOSProvider implements CloudStorageProvider {
         ObjectMetadata metadata = new ObjectMetadata();
         metadata.setContentLength(is.available());
         if (compressed) {
-            metadata.setContentEncoding("deflate");
+            metadata.setContentEncoding(DEFLATE_ENCODING);
         }
         PutObjectRequest putRequest = new PutObjectRequest(bucketName, key, is, metadata);
         upload(putRequest);
     }
 
     @Override
-    public boolean fileExists(String path) {
+    public boolean fileExists(String key) {
+        Objects.requireNonNull(key, "key cannot be null");
         try {
-            cosClient.getObjectMetadata(bucketName, path);
+            cosClient.getObjectMetadata(bucketName, key);
             return true;
         } catch (CosServiceException e) {
             if (e.getStatusCode() == 404) {
@@ -74,6 +82,7 @@ public class TencentCOSProvider implements CloudStorageProvider {
 
     @Override
     public InputStream getObjectStream(String key) {
+        Objects.requireNonNull(key, "Key cannot be null");
         return getObjectStream(new GetObjectRequest(bucketName, key));
     }
 
@@ -83,23 +92,34 @@ public class TencentCOSProvider implements CloudStorageProvider {
     }
 
     public void upload(PutObjectRequest putRequest) {
-        cosClient.putObject(putRequest);
+        try {
+            cosClient.putObject(putRequest);
+        } catch (CosServiceException e) {
+            throw new RuntimeException("Failed to upload file: " + putRequest.getKey(), e);
+        }
     }
 
     public InputStream getObjectStream(GetObjectRequest getRequest) {
         try {
             COSObject object = cosClient.getObject(getRequest);
             InputStream is = object.getObjectContent();
+            boolean isDeflated = DEFLATE_ENCODING.equals(object.getObjectMetadata().getContentEncoding());
 
-            if (Objects.equals(object.getObjectMetadata().getContentEncoding(), "deflate")) {
-                return new InflaterInputStream(is);
-            }
-            return is;
+            return new FilterInputStream(isDeflated ? new InflaterInputStream(is) : is) {
+                @Override
+                public void close() throws IOException {
+                    try {
+                        super.close();
+                    } finally {
+                        object.close();
+                    }
+                }
+            };
         } catch (CosServiceException e) {
             if (e.getStatusCode() == 404) {
                 return null;
             }
-            throw e;
+            throw new RuntimeException("Failed to get object: " + getRequest.getKey(), e);
         }
     }
 }

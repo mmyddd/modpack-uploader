@@ -1,27 +1,33 @@
-
 package com.deshark;
 
 import com.deshark.core.ConfigManager;
 import com.deshark.core.schemas.*;
 import com.deshark.core.storage.CloudStorageProvider;
 import com.deshark.core.storage.StorageProviderFactory;
-import com.deshark.core.task.FileUploadTask;
+import com.deshark.core.task.ModpackFileUploadTask;
 import com.deshark.core.utils.FileUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.*;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 
@@ -30,22 +36,6 @@ public class Main {
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
     private static final ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
     private static CloudStorageProvider storageProvider;
-
-    private static final int maxConcurrency = 12;
-    private static final ExecutorService threadPool = Executors.newFixedThreadPool(maxConcurrency,
-            new ThreadFactory() {
-                private AtomicInteger counter = new AtomicInteger(0);
-                @Override
-                public Thread newThread(Runnable r) {
-                    Thread t = new Thread(r, "FileUpload-" + counter.incrementAndGet());
-                    t.setDaemon(false);
-                    return t;
-                }
-            });
-    private static final CopyOnWriteArrayList<ModpackFile> successFiles = new CopyOnWriteArrayList<>();
-    private static final CopyOnWriteArrayList<ModpackFile> failedFiles = new CopyOnWriteArrayList<>();
-    private static AtomicInteger completedTasks = new AtomicInteger(0);
-    private static AtomicInteger successTasks = new AtomicInteger(0);
 
     public static void main(String[] args) {
 
@@ -61,7 +51,7 @@ public class Main {
         String projectId = configManager.getProjectId();
         String versionName = configManager.getVersionName();
 
-        File sourceDir = new File(sourceDirStr);
+        Path sourceDir = Paths.get(sourceDirStr);
 
         // set libraries(whats the use)
         Map<String, String> libraries = new HashMap<>();
@@ -78,73 +68,45 @@ public class Main {
         String metaKey = "stable/" + projectId + "/meta.json";
 
         // check version
-        MetaFile meta;
-        try (InputStream is = storageProvider.getObjectStream(metaKey)) {
-            if (is != null) {
-                meta = mapper.readValue(is, MetaFile.class);
-                String lastestVersionName = meta.latestVersion().versionName();
-                logger.info("Lastest Version Name: {}", lastestVersionName);
-            } else {
-                logger.info("No meta data found");
-            }
+        try {
+            checkExistingVersions(metaKey, versionsKey, versionName);
         } catch (IOException e) {
-            e.printStackTrace();
+            logger.error("Version check failed", e);
+            return;
         }
 
-        Versions versions;
-        try (InputStream is = storageProvider.getObjectStream(versionsKey)) {
-            if (is != null) {
-                versions = mapper.readValue(is, Versions.class);
-                boolean duplicate = versions.versions().stream()
-                        .anyMatch(v -> v.versionName().equals(versionName));
-                if (duplicate) {
-                    logger.info("Duplicate version name: {}", versionName);
-                    return;
-                }
-            }
+        List<Path> fileList;
+        try {
+            fileList = FileUtil.collectFiles(sourceDir);
         } catch (IOException e) {
-            e.printStackTrace();
+            logger.error("Failed to collect files", e);
+            return;
         }
-
-        List<File> fileList = new ArrayList<>();
-        FileUtil.collectFiles(sourceDir, fileList);
         logger.info("Found {} files", fileList.size());
 
         long startTime = System.currentTimeMillis();
-
-        List<Future<ModpackFile>> futures = new ArrayList<>();
-
-        for (File file : fileList) {
-            FileUploadTask task = new FileUploadTask(storageProvider, file, getRelativePath(file, sourceDir), downloadUrl);
-            Future<ModpackFile> future = threadPool.submit(task);
-            futures.add(future);
-        }
-
-        for (Future<ModpackFile> future : futures) {
-            try {
-                ModpackFile file = future.get();
-                successFiles.add(file);
-                successTasks.incrementAndGet();
-            } catch (ExecutionException | InterruptedException e) {
-                logger.error(e.getMessage());
+        List<ModpackFile> results;
+        try (ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() * 2)) {
+            List<CompletableFuture<ModpackFile>> futures = fileList.stream()
+                    .map(file -> new ModpackFileUploadTask(storageProvider, file, getRelativePath(file, sourceDir), downloadUrl, 3)
+                            .executeAsync(executor))
+                    .toList();
+            results = new ArrayList<>();
+            for (CompletableFuture<ModpackFile> future : futures) {
+                try {
+                    results.add(future.get());
+                } catch (ExecutionException | InterruptedException e) {
+                    logger.error("File upload failed", e);
+                    return;
+                }
             }
-            completedTasks.incrementAndGet();
-        }
-
-        threadPool.shutdown();
-        try {
-            if (!threadPool.awaitTermination(60, TimeUnit.SECONDS)) {
-                threadPool.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            threadPool.shutdownNow();
         }
 
         long endTime = System.currentTimeMillis();
         logger.info("Files upload completed in {} ms", endTime - startTime);
 
         // meta files
-        Modpack modpack = new Modpack(successFiles, versionName, libraries);
+        Modpack modpack = new Modpack(results, versionName, libraries);
 
         uploadConfigFile(modpack, modpackKey);
 
@@ -156,27 +118,15 @@ public class Main {
                 versionName, currentDate, modpackUrl, changelogUrl
         );
 
-        List<VersionInfo> newVersions;
-
-        if (storageProvider.fileExists(versionsKey)) {
-            InputStream versionsStream = storageProvider.getObjectStream(versionsKey);
-            try {
-                newVersions = mapper.readValue(versionsStream, Versions.class).versions();
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        } else {
-            newVersions = new ArrayList<>();
-        }
-
+        List<VersionInfo> newVersions = getExistingVersions(versionsKey);
         newVersions.add(lastestVersion);
-        versions = new Versions(newVersions);
+        Versions versions = new Versions(newVersions);
 
         uploadConfigFile(versions, versionsKey);
 
         String VersionsUrl = downloadUrl + "/" + versionsKey;
 
-        meta = new MetaFile(VersionsUrl, lastestVersion);
+        MetaFile meta = new MetaFile(VersionsUrl, lastestVersion);
 
         uploadConfigFile(meta, metaKey);
 
@@ -184,9 +134,43 @@ public class Main {
         logger.info("================");
         logger.info("发布完成! 耗时: {}s", (System.currentTimeMillis() - startTime) / 1000.0);
         logger.info("版本: {}", versionName);
-        logger.info("meta.json url: {}", metaUrl);
+        logger.info("meta.json: {}", metaUrl);
 
         storageProvider.shutdown();
+    }
+
+    private static void checkExistingVersions(String metaKey, String versionsKey, String versionName) throws IOException {
+        try (InputStream is = storageProvider.getObjectStream(metaKey)) {
+            if (is != null) {
+                MetaFile meta = mapper.readValue(is, MetaFile.class);
+                String latestVersionName = meta.latestVersion().versionName();
+                logger.info("Latest Version Name: {}", latestVersionName);
+            } else {
+                logger.info("No meta data found");
+            }
+        }
+        try (InputStream is = storageProvider.getObjectStream(versionsKey)) {
+            if (is != null) {
+                Versions versions = mapper.readValue(is, Versions.class);
+                boolean duplicate = versions.versions().stream()
+                        .anyMatch(v -> v.versionName().equals(versionName));
+                if (duplicate) {
+                    logger.error("Duplicate version name: {}", versionName);
+                    throw new IOException("Duplicate version name");
+                }
+            }
+        }
+    }
+
+    private static List<VersionInfo> getExistingVersions(String versionsKey) {
+        if (storageProvider.fileExists(versionsKey)) {
+            try (InputStream versionsStream = storageProvider.getObjectStream(versionsKey)) {
+                return mapper.readValue(versionsStream, Versions.class).versions();
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to read existing versions", e);
+            }
+        }
+        return new ArrayList<>();
     }
 
     private static <T> void uploadConfigFile(T config, String key) {
@@ -207,10 +191,7 @@ public class Main {
         }
     }
 
-    private static String getRelativePath(File file, File baseDir) {
-        String basePath = baseDir.getAbsolutePath();
-        String filePath = file.getAbsolutePath();
-        String relativePath = filePath.substring(basePath.length() + 1);
-        return relativePath.replace("\\", "/");
+    private static String getRelativePath(Path file, Path baseDir) {
+        return baseDir.relativize(file).toString().replace("\\", "/");
     }
 }

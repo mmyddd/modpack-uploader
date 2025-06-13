@@ -1,6 +1,6 @@
 package com.deshark.core.schemas;
 
 public record MetaFile(
-        String versionsUrl,
+        String versionsPath,
         VersionInfo latestVersion
 ) {}
