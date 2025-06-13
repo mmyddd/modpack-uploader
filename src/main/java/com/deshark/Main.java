@@ -25,10 +25,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 
@@ -108,7 +105,8 @@ public class Main {
         long startTime = System.currentTimeMillis();
         List<ModpackFile> results = new ArrayList<>();
 
-        try (ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() * 2)) {
+        ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() * 2);
+        try {
             List<CompletableFuture<ModpackFile>> commonFutures = fileList.stream()
                     .map(file -> new ModpackFileUploadTask(storageProvider, file, getRelativePath(file, sourceDir), downloadUrl, "common", 3)
                             .executeAsync(executor))
@@ -135,6 +133,16 @@ public class Main {
                     logger.error("File upload failed", e);
                     return;
                 }
+            }
+        } finally {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
             }
         }
 
